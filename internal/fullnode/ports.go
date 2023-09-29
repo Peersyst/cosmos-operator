@@ -14,6 +14,8 @@ const (
 	promPort    = 26660
 	rosettaPort = 8080
 	rpcPort     = 26657
+	jsonRpcPort = 8545
+	jsonRpcWsPort = 8546
 )
 
 func buildPorts(nodeType cosmosv1.FullNodeType) []corev1.ContainerPort {
@@ -65,4 +67,14 @@ var defaultPorts = [...]corev1.ContainerPort{
 		Protocol:      corev1.ProtocolTCP,
 		ContainerPort: grpcWebPort,
 	},
+	{
+                Name:          "json-rpc",
+                Protocol:      corev1.ProtocolTCP,
+                ContainerPort: jsonRpcPort,
+        },
+	{
+                Name:          "json-rpc-ws",
+                Protocol:      corev1.ProtocolTCP,
+                ContainerPort: jsonRpcWsPort,
+        },
 }

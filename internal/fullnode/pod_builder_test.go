@@ -116,6 +116,8 @@ func TestPodBuilder(t *testing.T) {
 			{"p2p", 26656},
 			{"rpc", 26657},
 			{"grpc-web", 9091},
+			{"json-rpc", 8545},
+			{"json-rpc-ws", 8545},
 		} {
 			port := ports[i]
 			require.Equal(t, tt.Name, port.Name, tt)

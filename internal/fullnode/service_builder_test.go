@@ -224,6 +224,18 @@ func TestBuildServices(t *testing.T) {
 				Port:       9091,
 				TargetPort: intstr.FromString("grpc-web"),
 			},
+			{
+                                Name:       "json-rpc",
+                                Protocol:   corev1.ProtocolTCP,
+                                Port:       8545,
+                                TargetPort: intstr.FromString("json-rpc"),
+                        },
+			{
+                                Name:       "json-rpc-ws",
+                                Protocol:   corev1.ProtocolTCP,
+                                Port:       8546,
+                                TargetPort: intstr.FromString("json-rpc-ws"),
+                        },
 		}
 
 		require.Equal(t, want, rpc.Spec.Ports)
