@@ -69,8 +69,13 @@ func BuildServices(crd *cosmosv1.CosmosFullNode) []diff.Resource[*corev1.Service
 	}
 
 	rpc := rpcService(crd)
+	jsonRpc := jsonRpcService(crd)
+	jsonRpcWs := jsonRpcWsService(crd)
 
-	return append(p2ps, diff.Adapt(rpc, len(p2ps)))
+	services := append(p2ps, diff.Adapt(rpc, len(p2ps)))
+	services = append(services, diff.Adapt(jsonRpc, len(services)))
+	services = append(services, diff.Adapt(jsonRpcWs, len(services)))
+	return services
 }
 
 func rpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
@@ -115,12 +120,76 @@ func rpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
 			Port:       grpcWebPort,
 			TargetPort: intstr.FromString("grpc-web"),
 		},
+	}
+
+	svc.Spec.Selector = map[string]string{kube.NameLabel: appName(crd)}
+	svc.Spec.Type = corev1.ServiceTypeClusterIP
+
+	rpcSpec := crd.Spec.Service.RPCTemplate
+	preserveMergeInto(svc.Labels, rpcSpec.Metadata.Labels)
+	preserveMergeInto(svc.Annotations, rpcSpec.Metadata.Annotations)
+	kube.NormalizeMetadata(&svc.ObjectMeta)
+
+	if v := rpcSpec.ExternalTrafficPolicy; v != nil {
+		svc.Spec.ExternalTrafficPolicy = *v
+	}
+	if v := rpcSpec.Type; v != nil {
+		svc.Spec.Type = *v
+	}
+
+	return &svc
+}
+
+func jsonRpcService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
+	var svc corev1.Service
+	svc.Name = jsonRpcServiceName(crd)
+	svc.Namespace = crd.Namespace
+	svc.Kind = "Service"
+	svc.APIVersion = "v1"
+	svc.Labels = defaultLabels(crd,
+		kube.ComponentLabel, "json-rpc",
+	)
+	svc.Annotations = map[string]string{}
+
+	svc.Spec.Ports = []corev1.ServicePort{
 		{
 			Name:       "json-rpc",
 			Protocol:   corev1.ProtocolTCP,
 			Port:       jsonRpcPort,
 			TargetPort: intstr.FromString("json-rpc"),
 		},
+	}
+
+	svc.Spec.Selector = map[string]string{kube.NameLabel: appName(crd)}
+	svc.Spec.Type = corev1.ServiceTypeClusterIP
+
+	rpcSpec := crd.Spec.Service.RPCTemplate
+	preserveMergeInto(svc.Labels, rpcSpec.Metadata.Labels)
+	preserveMergeInto(svc.Annotations, rpcSpec.Metadata.Annotations)
+	kube.NormalizeMetadata(&svc.ObjectMeta)
+
+	if v := rpcSpec.ExternalTrafficPolicy; v != nil {
+		svc.Spec.ExternalTrafficPolicy = *v
+	}
+	if v := rpcSpec.Type; v != nil {
+		svc.Spec.Type = *v
+	}
+
+	return &svc
+}
+
+func jsonRpcWsService(crd *cosmosv1.CosmosFullNode) *corev1.Service {
+	var svc corev1.Service
+	svc.Name = jsonRpcWsServiceName(crd)
+	svc.Namespace = crd.Namespace
+	svc.Kind = "Service"
+	svc.APIVersion = "v1"
+	svc.Labels = defaultLabels(crd,
+		kube.ComponentLabel, "json-rpc-ws",
+	)
+	svc.Annotations = map[string]string{}
+
+	svc.Spec.Ports = []corev1.ServicePort{
 		{
 			Name:       "json-rpc-ws",
 			Protocol:   corev1.ProtocolTCP,
@@ -153,4 +222,12 @@ func p2pServiceName(crd *cosmosv1.CosmosFullNode, ordinal int32) string {
 
 func rpcServiceName(crd *cosmosv1.CosmosFullNode) string {
 	return fmt.Sprintf("%s-rpc", appName(crd))
+}
+
+func jsonRpcServiceName(crd *cosmosv1.CosmosFullNode) string {
+	return fmt.Sprintf("%s-json-rpc", appName(crd))
+}
+
+func jsonRpcWsServiceName(crd *cosmosv1.CosmosFullNode) string {
+	return fmt.Sprintf("%s-json-rpc-ws", appName(crd))
 }
