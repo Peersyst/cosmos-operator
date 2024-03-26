@@ -42,7 +42,7 @@ jobs:
         id: env-vars
         run: |
           echo "ENV=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          echo "TAG=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+          echo "TAG=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
           echo "NOW=$(TZ=':Europe/Madrid' date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
 
       # Checkout repository under $GITHUB_WORKSPACE path
