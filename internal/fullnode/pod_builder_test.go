@@ -37,6 +37,11 @@ func defaultCRD() cosmosv1.CosmosFullNode {
 					},
 				},
 			},
+			VolumeClaimTemplate: cosmosv1.PersistentVolumeClaimSpec{
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("100Gi")},
+				},
+			},
 		},
 	}
 }
@@ -199,6 +204,20 @@ func TestPodBuilder(t *testing.T) {
 		test.RequireValidMetadata(t, pod)
 	})
 
+	t.Run("additional args", func(t *testing.T) {
+		crd := defaultCRD()
+
+		crd.Spec.ChainSpec.AdditionalStartArgs = []string{"--foo", "bar"}
+
+		builder := NewPodBuilder(&crd)
+		pod, err := builder.WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		test.RequireValidMetadata(t, pod)
+
+		require.Equal(t, []string{"start", "--home", "/home/operator/cosmos", "--foo", "bar"}, pod.Spec.Containers[0].Args)
+	})
+
 	t.Run("containers", func(t *testing.T) {
 		crd := defaultCRD()
 		const wantWrkDir = "/home/operator"
@@ -224,10 +243,12 @@ func TestPodBuilder(t *testing.T) {
 		require.Equal(t, startContainer.Env[1].Value, "/home/operator/cosmos")
 		require.Equal(t, startContainer.Env[2].Name, "GENESIS_FILE")
 		require.Equal(t, startContainer.Env[2].Value, "/home/operator/cosmos/config/genesis.json")
-		require.Equal(t, startContainer.Env[3].Name, "CONFIG_DIR")
-		require.Equal(t, startContainer.Env[3].Value, "/home/operator/cosmos/config")
-		require.Equal(t, startContainer.Env[4].Name, "DATA_DIR")
-		require.Equal(t, startContainer.Env[4].Value, "/home/operator/cosmos/data")
+		require.Equal(t, startContainer.Env[3].Name, "ADDRBOOK_FILE")
+		require.Equal(t, startContainer.Env[3].Value, "/home/operator/cosmos/config/addrbook.json")
+		require.Equal(t, startContainer.Env[4].Name, "CONFIG_DIR")
+		require.Equal(t, startContainer.Env[4].Value, "/home/operator/cosmos/config")
+		require.Equal(t, startContainer.Env[5].Name, "DATA_DIR")
+		require.Equal(t, startContainer.Env[5].Value, "/home/operator/cosmos/data")
 		require.Equal(t, envVars(&crd), startContainer.Env)
 
 		healthContainer := pod.Spec.Containers[1]
@@ -244,7 +265,7 @@ func TestPodBuilder(t *testing.T) {
 		}
 		require.Equal(t, healthPort, healthContainer.Ports[0])
 
-		require.Len(t, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string { return c.Name }), 5)
+		require.Len(t, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string { return c.Name }), 7)
 
 		wantInitImages := []string{
 			"ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1",
@@ -252,6 +273,8 @@ func TestPodBuilder(t *testing.T) {
 			"ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1",
 			"ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1",
 			"ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1",
+			"ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1",
+			"ghcr.io/strangelove-ventures/cosmos-operator:latest",
 		}
 		require.Equal(t, wantInitImages, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string {
 			return c.Image
@@ -266,10 +289,14 @@ func TestPodBuilder(t *testing.T) {
 		require.Contains(t, freshCont.Args[1], `rm -rf "$HOME/.tmp/*"`)
 
 		initCont := pod.Spec.InitContainers[1]
-		require.Contains(t, initCont.Args[1], `osmosisd init osmosis-6 --chain-id osmosis-123 --home "$CHAIN_HOME"`)
-		require.Contains(t, initCont.Args[1], `osmosisd init osmosis-6 --chain-id osmosis-123 --home "$HOME/.tmp"`)
+		require.Contains(t, initCont.Args[1], `osmosisd init --chain-id osmosis-123 osmosis-6 --home "$CHAIN_HOME"`)
+		require.Contains(t, initCont.Args[1], `osmosisd init --chain-id osmosis-123 osmosis-6 --home "$HOME/.tmp"`)
 
-		mergeConfig := pod.Spec.InitContainers[3]
+		mergeConfig1 := pod.Spec.InitContainers[3]
+		// The order of config-merge arguments is important. Rightmost takes precedence.
+		require.Contains(t, mergeConfig1.Args[1], `echo Using default address book`)
+
+		mergeConfig := pod.Spec.InitContainers[4]
 		// The order of config-merge arguments is important. Rightmost takes precedence.
 		require.Contains(t, mergeConfig.Args[1], `config-merge -f toml "$TMP_DIR/config.toml" "$OVERLAY_DIR/config-overlay.toml" > "$CONFIG_DIR/config.toml"`)
 		require.Contains(t, mergeConfig.Args[1], `config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CONFIG_DIR/app.toml`)
@@ -295,10 +322,12 @@ func TestPodBuilder(t *testing.T) {
 		require.Equal(t, container.Env[1].Value, "/home/operator/.osmosisd")
 		require.Equal(t, container.Env[2].Name, "GENESIS_FILE")
 		require.Equal(t, container.Env[2].Value, "/home/operator/.osmosisd/config/genesis.json")
-		require.Equal(t, container.Env[3].Name, "CONFIG_DIR")
-		require.Equal(t, container.Env[3].Value, "/home/operator/.osmosisd/config")
-		require.Equal(t, container.Env[4].Name, "DATA_DIR")
-		require.Equal(t, container.Env[4].Value, "/home/operator/.osmosisd/data")
+		require.Equal(t, container.Env[3].Name, "ADDRBOOK_FILE")
+		require.Equal(t, container.Env[3].Value, "/home/operator/.osmosisd/config/addrbook.json")
+		require.Equal(t, container.Env[4].Name, "CONFIG_DIR")
+		require.Equal(t, container.Env[4].Value, "/home/operator/.osmosisd/config")
+		require.Equal(t, container.Env[5].Name, "DATA_DIR")
+		require.Equal(t, container.Env[5].Value, "/home/operator/.osmosisd/data")
 
 		require.NotEmpty(t, pod.Spec.InitContainers)
 
@@ -556,8 +585,44 @@ gaiad start --home /home/operator/cosmos`
 		require.Equal(t, "/foo", extraVol[0].MountPath)
 
 		initConts := lo.SliceToMap(pod.Spec.InitContainers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
-		require.ElementsMatch(t, []string{"clean-init", "chain-init", "new-init", "genesis-init", "config-merge"}, lo.Keys(initConts))
+		require.ElementsMatch(t, []string{"clean-init", "chain-init", "new-init", "genesis-init", "addrbook-init", "config-merge", "version-check"}, lo.Keys(initConts))
 		require.Equal(t, "foo:latest", initConts["chain-init"].Image)
+	})
+
+	t.Run("containers with chain spec versions", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Spec.PodTemplate.Volumes = []corev1.Volume{
+			{Name: "foo-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		}
+		crd.Spec.PodTemplate.InitContainers = []corev1.Container{
+			{Name: "chain-init", Image: "foo:latest", VolumeMounts: []corev1.VolumeMount{
+				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
+			}},
+			{Name: "new-init", Image: "new-init:latest"}, // New container.
+		}
+		crd.Spec.PodTemplate.Containers = []corev1.Container{
+			{Name: "node", VolumeMounts: []corev1.VolumeMount{
+				{Name: "foo-vol", MountPath: "/foo"}, // Should be merged with existing.
+			}},
+			{Name: "new-sidecar", Image: "new-sidecar:latest"}, // New container.
+		}
+		crd.Spec.ChainSpec.Versions = []cosmosv1.ChainVersion{
+			{
+				UpgradeHeight: 1,
+				Image:         "image:v1.0.0",
+			},
+			{
+				UpgradeHeight: 100,
+				Image:         "image:v2.0.0",
+			},
+		}
+
+		builder := NewPodBuilder(&crd)
+		pod, err := builder.WithOrdinal(0).Build()
+		require.NoError(t, err)
+
+		containers := lo.SliceToMap(pod.Spec.Containers, func(c corev1.Container) (string, corev1.Container) { return c.Name, c })
+		require.ElementsMatch(t, []string{"node", "new-sidecar", "healthcheck", "version-check-interval"}, lo.Keys(containers))
 	})
 
 	test.HasTypeLabel(t, func(crd cosmosv1.CosmosFullNode) []map[string]string {
