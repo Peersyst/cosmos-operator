@@ -88,11 +88,13 @@ jobs:
       # Build and push image
       - name: Build Cosmos image
         env:
-          ENV: ${{ needs.initial.outputs.TAG }}
+          TAG: ${{ needs.initial.outputs.TAG }}
         run: |
           docker build -t peersyst/cosmos-operator:${{ env.TAG }} .
 
       - name: Push indexer image
+        env:
+          TAG: ${{ needs.initial.outputs.TAG }}
         run: |
           docker push peersyst/cosmos-operator:${{ env.TAG }}
 
