@@ -93,6 +93,8 @@ jobs:
         with:
           file: Dockerfile
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.TAG }}
           push: true
           tags: |
             peersyst/cosmos-operator:${{ env.TAG }}
