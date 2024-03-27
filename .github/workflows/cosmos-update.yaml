@@ -90,7 +90,8 @@ jobs:
         env:
           TAG: ${{ needs.initial.outputs.TAG }}
         run: |
-          docker build -t peersyst/cosmos-operator:${{ env.TAG }} --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" .
+          #docker build -t peersyst/cosmos-operator:${{ env.TAG }} --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" .
+          docker buildx build --platform linux/amd64 --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" --tag peersyst/cosmos-operator:latest .
 
       - name: Push indexer image
         env:
