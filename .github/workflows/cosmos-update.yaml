@@ -86,18 +86,30 @@ jobs:
           password: ${{ secrets.DOCKER_PUSH_TOKEN }}
 
       # Build and push image
-      - name: Build Cosmos image
+      - name: Build docker image
+        uses: docker/build-push-action@v4
         env:
           TAG: ${{ needs.initial.outputs.TAG }}
-        run: |
-          #docker build -t peersyst/cosmos-operator:${{ env.TAG }} --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" .
-          docker buildx build --platform linux/amd64 --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" --tag peersyst/cosmos-operator:latest .
+        with:
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            peersyst/cosmos-operator:${{ env.TAG }}
 
-      - name: Push indexer image
-        env:
-          TAG: ${{ needs.initial.outputs.TAG }}
-        run: |
-          docker push peersyst/cosmos-operator:${{ env.TAG }}
+      # Build and push image
+      #- name: Build Cosmos image
+      #  env:
+      #    TAG: ${{ needs.initial.outputs.TAG }}
+      #  run: |
+          #docker build -t peersyst/cosmos-operator:${{ env.TAG }} --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" .
+      #    docker buildx build --platform linux/amd64 --build-arg "TARGETARCH=linux/amd64" --build-arg "BUILDARCH=linux/amd64" --tag peersyst/cosmos-operator:latest .
+
+      #- name: Push indexer image
+      #  env:
+      #    TAG: ${{ needs.initial.outputs.TAG }}
+      #  run: |
+      #    docker push peersyst/cosmos-operator:${{ env.TAG }}
 
       # Send Slack message if any previous step has failed in this job
       - name: 📬 Failure job notification
