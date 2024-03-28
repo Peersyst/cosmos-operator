@@ -138,10 +138,8 @@ jobs:
         env:
           KUBECONFIG: ${{ secrets.KUBECONFIG }}
           KUBE_VERSION: v1.29.0
-          HELM_VERSION: v3.12.2
         run: |
           curl -Ls https://storage.googleapis.com/kubernetes-release/release/${KUBE_VERSION}/bin/linux/amd64/kubectl -o kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
-          curl -Ls https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz -o helm-linux-amd64.tar.gz && tar -xzf helm-linux-amd64.tar.gz && mv linux-amd64/helm /usr/local/bin/helm
           echo ${KUBECONFIG} | base64 --decode > kubeconfig.yaml
           chmod 600 kubeconfig.yaml
           echo ${GITHUB_WORKSPACE}
@@ -164,10 +162,7 @@ jobs:
           KUBECONFIG: ${{ env.KUBECONFIG }}
         run: |
           kubectl config use-context peersyst-${ENV}
-          kubectl version
-          helm version
-          #make deploy IMG="peersyst/cosmos-operator:${TAG}"
-          make deploy IMG="peersyst/cosmos-operator:multi-rpc-3"
+          make deploy IMG="peersyst/cosmos-operator:${TAG}"
 
       # Send Slack message if any previous step has failed in this job
       - name: 📬 Failure job notification
