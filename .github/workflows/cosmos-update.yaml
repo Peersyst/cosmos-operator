@@ -137,7 +137,7 @@ jobs:
         shell: bash
         env:
           KUBECONFIG: ${{ secrets.KUBECONFIG }}
-          KUBE_VERSION: v1.27.4
+          KUBE_VERSION: v1.29.0
         run: |
           curl -Ls https://storage.googleapis.com/kubernetes-release/release/${KUBE_VERSION}/bin/linux/amd64/kubectl -o kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
           echo ${KUBECONFIG} | base64 --decode > kubeconfig.yaml
