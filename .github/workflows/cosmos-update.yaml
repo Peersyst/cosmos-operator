@@ -1,0 +1,199 @@
+name: cosmos-update
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: Environment where to deploy
+        options:
+        - privatenet
+        - devnet
+        - testnet
+        - mainnet
+      tag:
+        description: Tag name (for ex latest, main, v1.0.0-rc ...)
+        required: true
+
+concurrency:
+  # Cancel old runs if there is a new commit in the same branch
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  # Needed to configure aws credentials step
+  id-token: write
+  contents: read
+
+jobs:
+  initial:
+    name: Initial
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      ENV: ${{ steps.env-vars.outputs.ENV }}
+      TAG: ${{ steps.env-vars.outputs.TAG }}
+      NOW: ${{ steps.env-vars.outputs.NOW }}
+
+    steps:
+      # Define global vars that will be used through the pipeline
+      - name: Defining global vars
+        shell: bash
+        id: env-vars
+        run: |
+          echo "ENV=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          echo "TAG=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          echo "NOW=$(TZ=':Europe/Madrid' date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_OUTPUT
+
+      # Checkout repository under $GITHUB_WORKSPACE path
+      - name: Repository checkout
+        uses: actions/checkout@v4
+
+      # Send initial Slack deployment message
+      - name: Initial Slack deployment message
+        shell: bash
+        env:
+          ENV: ${{ steps.env-vars.outputs.ENV }}
+          TAG: ${{ steps.env-vars.outputs.TAG }}
+          NOW: ${{ steps.env-vars.outputs.NOW }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "Send initial Slack message"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"🎬 Starting *COSMOS-UPDATE* update in *${ENV}* cluster - Commit: <https://github.com/Peersyst/cosmos-operator/commit/${TAG}|${TAG}> by ${GITHUB_ACTOR}\"}" ${SLACK_WEBHOOK_URL}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: initial
+
+    steps:
+      # Checkout repository under $GITHUB_WORKSPACE path
+      - name: Repository checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to DockerHub
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PUSH_TOKEN }}
+
+      # Build and push image
+      - name: Build docker image
+        uses: docker/build-push-action@v5
+        env:
+          TAG: ${{ needs.initial.outputs.TAG }}
+        with:
+          file: Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ env.TAG }}
+          push: true
+          tags: |
+            peersyst/cosmos-operator:${{ env.TAG }}
+
+      # Send Slack message if any previous step has failed in this job
+      - name: 📬 Failure job notification
+        if: ${{ failure() }}
+        shell: sh
+        env:
+          ENV: ${{ needs.initial.outputs.ENV }}
+          TAG: ${{ needs.initial.outputs.TAG }}
+          NOW: ${{ needs.initial.outputs.NOW }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "Send error Slack message"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"❌ *COSMOS-UPDATE* ${GITHUB_JOB} job *FAILED* for *${ENV}*. Check pipeline logs <https://github.com/Peersyst/cosmos-operator/actions/runs/${GITHUB_RUN_ID}|here> - Commit: <https://github.com/Peersyst/cosmos-operator/commit/${TAG}|${TAG}> by ${GITHUB_ACTOR}\"}" ${SLACK_WEBHOOK_URL}
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [initial, build]
+
+    steps:
+      # Checkout repository under $GITHUB_WORKSPACE path
+      - name: Repository checkout
+        uses: actions/checkout@v4
+
+      # Assume gitHubdeploymentsRole AWS role
+      - name: Configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::291847425310:role/gitHubDeploymentsRole
+          role-session-name: deploymentsRole
+          role-duration-seconds: 900
+          aws-region: us-east-1
+
+      # Kubectl install
+      - name: Kubectl install
+        shell: bash
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+          KUBE_VERSION: v1.27.4
+        run: |
+          curl -Ls https://storage.googleapis.com/kubernetes-release/release/${KUBE_VERSION}/bin/linux/amd64/kubectl -o kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
+          echo ${KUBECONFIG} | base64 --decode > kubeconfig.yaml
+          chmod 600 kubeconfig.yaml
+          echo ${GITHUB_WORKSPACE}
+          echo "KUBECONFIG=${GITHUB_WORKSPACE}/kubeconfig.yaml" >> $GITHUB_ENV
+
+      # Setup Go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      # Cosmos update
+      - name: Cosmos update
+        shell: bash
+        env:
+          ENV: ${{ needs.initial.outputs.ENV }}
+          TAG: ${{ needs.initial.outputs.TAG }}
+          NOW: ${{ needs.initial.outputs.NOW }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
+          kubectl config use-context peersyst-${ENV}
+          make deploy IMG="peersyst/cosmos-operator:${TAG}"
+
+      # Send Slack message if any previous step has failed in this job
+      - name: 📬 Failure job notification
+        if: ${{ failure() }}
+        shell: sh
+        env:
+          ENV: ${{ needs.initial.outputs.ENV }}
+          TAG: ${{ needs.initial.outputs.TAG }}
+          NOW: ${{ needs.initial.outputs.NOW }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "Send error Slack message"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"❌ *COSMOS-UPDATE* ${GITHUB_JOB} job *FAILED* in *${ENV}*. Check pipeline logs <https://github.com/Peersyst/cosmos-operator/actions/runs/${GITHUB_RUN_ID}|here> - Commit: <https://github.com/Peersyst/cbdc-wallet/commit/${TAG}|${TAG}> by ${GITHUB_ACTOR}\"}" ${SLACK_WEBHOOK_URL}
+
+  final:
+    name: 🏁 Final
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    needs: [initial, build, deploy]
+    if: |
+      always() &&
+      !contains(join(needs.*.result, ','), 'failure')
+
+    steps:
+      # Send final Slack deployment message
+      - name: 📬 Final Slack deployment message
+        shell: bash
+        env:
+          ENV: ${{ needs.initial.outputs.ENV }}
+          TAG: ${{ needs.initial.outputs.TAG }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          echo "Send final Slack message"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"🏁 *COSMOS-UPDATE* deployment in *${ENV}* environment *SUCCESSFULLY* - Commit: <https://github.com/Peersyst/cosmos-operator/commit/${TAG}|${TAG}> by ${GITHUB_ACTOR}\"}" ${SLACK_WEBHOOK_URL}

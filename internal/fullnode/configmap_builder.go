@@ -38,7 +38,29 @@ func BuildConfigMaps(crd *cosmosv1.CosmosFullNode, peers Peers) ([]diff.Resource
 			return nil, err
 		}
 		buf.Reset()
-		if err := addAppToml(buf, data, crd.Spec.ChainSpec.App); err != nil {
+		appCfg := crd.Spec.ChainSpec.App
+		if len(crd.Spec.ChainSpec.Versions) > 0 {
+			instanceHeight := uint64(0)
+			if height, ok := crd.Status.Height[instance]; ok {
+				instanceHeight = height
+			}
+			haltHeight := uint64(0)
+			for i, v := range crd.Spec.ChainSpec.Versions {
+				if v.SetHaltHeight {
+					haltHeight = v.UpgradeHeight
+				} else {
+					haltHeight = 0
+				}
+				if instanceHeight < v.UpgradeHeight {
+					break
+				}
+				if i == len(crd.Spec.ChainSpec.Versions)-1 {
+					haltHeight = 0
+				}
+			}
+			appCfg.HaltHeight = ptr(haltHeight)
+		}
+		if err := addAppToml(buf, data, appCfg); err != nil {
 			return nil, err
 		}
 		buf.Reset()
@@ -90,22 +112,31 @@ func addConfigToml(buf *bytes.Buffer, cmData map[string]string, crd *cosmosv1.Co
 	)
 
 	if crd.Spec.Type == cosmosv1.Sentry {
-		base["priv_validator_laddr"] = fmt.Sprintf("tcp://0.0.0.0:%d", privvalPort)
+		privVal := fmt.Sprintf("tcp://0.0.0.0:%d", privvalPort)
+		base["priv_validator_laddr"] = privVal
+		base["priv-validator-laddr"] = privVal
 		// Disable indexing for sentries; they should not serve queries.
-		base["tx_index"] = map[string]string{"indexer": "null"}
+
+		txIndex := map[string]string{"indexer": "null"}
+		base["tx_index"] = txIndex
+		base["tx-index"] = txIndex
 	}
 	if v := spec.LogLevel; v != nil {
 		base["log_level"] = v
+		base["log-level"] = v
 	}
 	if v := spec.LogFormat; v != nil {
 		base["log_format"] = v
+		base["log-format"] = v
 	}
 
 	privatePeers := peers.Except(instance, crd.Namespace)
 	privatePeerStr := commaDelimited(privatePeers.AllPrivate()...)
 	comet := spec.Comet
+	persistentPeers := commaDelimited(privatePeerStr, comet.PersistentPeers)
 	p2p := decodedToml{
-		"persistent_peers": commaDelimited(privatePeerStr, comet.PersistentPeers),
+		"persistent_peers": persistentPeers,
+		"persistent-peers": persistentPeers,
 		"seeds":            comet.Seeds,
 	}
 
@@ -113,27 +144,48 @@ func addConfigToml(buf *bytes.Buffer, cmData map[string]string, crd *cosmosv1.Co
 	privateIDs := commaDelimited(privateIDStr, comet.PrivatePeerIDs)
 	if v := privateIDs; v != "" {
 		p2p["private_peer_ids"] = v
+		p2p["private-peer-ids"] = v
 	}
 
 	unconditionalIDs := commaDelimited(privateIDStr, comet.UnconditionalPeerIDs)
 	if v := unconditionalIDs; v != "" {
 		p2p["unconditional_peer_ids"] = v
+		p2p["unconditional-peer-ids"] = v
 	}
 
 	if v := comet.MaxInboundPeers; v != nil {
 		p2p["max_num_inbound_peers"] = comet.MaxInboundPeers
+		p2p["max-num-inbound-peers"] = comet.MaxInboundPeers
 	}
 	if v := comet.MaxOutboundPeers; v != nil {
 		p2p["max_num_outbound_peers"] = comet.MaxOutboundPeers
+		p2p["max-num-outbound-peers"] = comet.MaxOutboundPeers
 	}
-	if v := peers.Get(instance, crd.Namespace).ExternalAddress; v != "" {
-		p2p["external_address"] = v
+
+	var externalOverride bool
+	if crd.Spec.InstanceOverrides != nil {
+		if override, ok := crd.Spec.InstanceOverrides[instance]; ok && override.ExternalAddress != nil {
+			addr := *override.ExternalAddress
+			p2p["external_address"] = addr
+			p2p["external-address"] = addr
+			externalOverride = true
+		}
+	}
+
+	if !externalOverride {
+		if v := peers.Get(instance, crd.Namespace).ExternalAddress; v != "" {
+			p2p["external_address"] = v
+			p2p["external-address"] = v
+		}
 	}
 
 	base["p2p"] = p2p
 
 	if v := comet.CorsAllowedOrigins; v != nil {
-		base["rpc"] = decodedToml{"cors_allowed_origins": v}
+		base["rpc"] = decodedToml{
+			"cors_allowed_origins": v,
+			"cors-allowed-origins": v,
+		}
 	}
 
 	dst := defaultComet()
