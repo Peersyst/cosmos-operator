@@ -150,7 +150,7 @@ jobs:
       # Setup Go
       - uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          go-version: '1.19.8'
           check-latest: true
 
       # Cosmos update
