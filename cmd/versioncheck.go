@@ -27,8 +27,9 @@ import (
 const (
 	namespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
-	flagBackend = "backend"
-	flagDaemon  = "daemon"
+	flagBackend           = "backend"
+	flagDaemon            = "daemon"
+	flagContinueOnFailure = "continue"
 
 	tickTime = 30 * time.Second
 )
@@ -46,6 +47,7 @@ func VersionCheckCmd(scheme *runtime.Scheme) *cobra.Command {
 			dataDir := os.Getenv("DATA_DIR")
 			backend, _ := cmd.Flags().GetString(flagBackend)
 			daemon, _ := cmd.Flags().GetBool(flagDaemon)
+			continueOnFailure, _ := cmd.Flags().GetBool(flagContinueOnFailure)
 
 			nsbz, err := os.ReadFile(namespaceFile)
 			if err != nil {
@@ -96,6 +98,10 @@ func VersionCheckCmd(scheme *runtime.Scheme) *cobra.Command {
 
 			s, err := os.Stat(dataDir)
 			if err != nil {
+				if continueOnFailure {
+					fmt.Fprintf(cmd.OutOrStdout(), "Failed to stat %s: %s\n", dataDir, err)
+					return
+				}
 				panic(fmt.Errorf("failed to stat %s: %w", dataDir, err))
 			}
 
@@ -126,6 +132,7 @@ func VersionCheckCmd(scheme *runtime.Scheme) *cobra.Command {
 
 	cmd.Flags().StringP(flagBackend, "b", "goleveldb", "Database backend")
 	cmd.Flags().BoolP(flagDaemon, "d", false, "Run as daemon")
+	cmd.Flags().BoolP(flagContinueOnFailure, "c", false, "Continue on failure")
 
 	return cmd
 }
@@ -174,7 +181,12 @@ func checkVersion(
 		image = v.Image
 	}
 
-	thisPodImage := thisPod.Spec.Containers[0].Image
+	var thisPodImage string
+	for _, c := range thisPod.Spec.Containers {
+		if c.Name == "node" {
+			thisPodImage = c.Image
+		}
+	}
 	if thisPodImage != image {
 		return fmt.Errorf("image mismatch for height %d: %s != %s", height, thisPodImage, image)
 	}

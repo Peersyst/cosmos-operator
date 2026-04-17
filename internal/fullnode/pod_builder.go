@@ -84,7 +84,7 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 					Command:         []string{startCmd},
 					Args:            startArgs,
 					Env:             envVars(crd),
-					Ports:           buildPorts(crd.Spec.Type),
+					Ports:           buildPorts(crd),
 					Resources:       tpl.Resources,
 					ReadinessProbe:  probes[0],
 					ImagePullPolicy: tpl.ImagePullPolicy,
@@ -96,7 +96,7 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 					// Available images: https://github.com/orgs/strangelove-ventures/packages?repo_name=cosmos-operator
 					// IMPORTANT: Must use v0.6.2 or later.
 					Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
-					Command: []string{"/manager", "healthcheck"},
+					Command: []string{"/manager", "healthcheck", "--rpc-host", fmt.Sprintf("http://localhost:%d", crd.Spec.ChainSpec.Comet.RPCPort())},
 					Ports:   []corev1.ContainerPort{{ContainerPort: healthCheckPort, Protocol: corev1.ProtocolTCP}},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
@@ -148,7 +148,7 @@ func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path:   "/health",
-				Port:   intstr.FromInt(rpcPort),
+				Port:   intstr.FromInt(int(crd.Spec.ChainSpec.Comet.RPCPort())),
 				Scheme: corev1.URISchemeHTTP,
 			},
 		},
@@ -157,6 +157,10 @@ func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
 		PeriodSeconds:       10,
 		SuccessThreshold:    1,
 		FailureThreshold:    5,
+	}
+
+	if crd.Spec.PodTemplate.Probes.Strategy == cosmosv1.FullNodeProbeStrategyReachable {
+		return []*corev1.Probe{mainProbe, nil}
 	}
 
 	sidecarProbe := &corev1.Probe{
@@ -181,22 +185,27 @@ func podReadinessProbes(crd *cosmosv1.CosmosFullNode) []*corev1.Probe {
 func (b PodBuilder) Build() (*corev1.Pod, error) {
 	pod := b.pod.DeepCopy()
 
+	if err := kube.ApplyStrategicMergePatch(pod, podPatch(b.crd)); err != nil {
+		return nil, err
+	}
+
 	if len(b.crd.Spec.ChainSpec.Versions) > 0 {
 		instanceHeight := uint64(0)
 		if height, ok := b.crd.Status.Height[pod.Name]; ok {
 			instanceHeight = height
 		}
-		var image string
-		for _, version := range b.crd.Spec.ChainSpec.Versions {
-			if instanceHeight < version.UpgradeHeight {
+		var vrs *cosmosv1.ChainVersion
+		for _, v := range b.crd.Spec.ChainSpec.Versions {
+			if instanceHeight < v.UpgradeHeight {
 				break
 			}
-			image = version.Image
+			vrs = &v
 		}
-		if image != "" {
-			setChainContainerImage(pod, image)
+		if vrs != nil {
+			setVersionedImages(pod, vrs)
 		}
 	}
+
 	if o, ok := b.crd.Spec.InstanceOverrides[pod.Name]; ok {
 		if o.DisableStrategy != nil {
 			return nil, nil
@@ -204,10 +213,9 @@ func (b PodBuilder) Build() (*corev1.Pod, error) {
 		if o.Image != "" {
 			setChainContainerImage(pod, o.Image)
 		}
-	}
-
-	if err := kube.ApplyStrategicMergePatch(pod, podPatch(b.crd)); err != nil {
-		return nil, err
+		if o.NodeSelector != nil {
+			pod.Spec.NodeSelector = o.NodeSelector
+		}
 	}
 
 	kube.NormalizeMetadata(&pod.ObjectMeta)
@@ -217,9 +225,8 @@ func (b PodBuilder) Build() (*corev1.Pod, error) {
 const (
 	volChainHome = "vol-chain-home" // Stores live chain data and config files.
 	volTmp       = "vol-tmp"        // Stores temporary config files for manipulation later.
-	volConfig    = "vol-config"     // Items from ConfigMap.
+	volConfig    = "vol-config"     // Overlay items from ConfigMap.
 	volSystemTmp = "vol-system-tmp" // Necessary for statesync or else you may see the error: ERR State sync failed err="failed to create chunk queue: unable to create temp dir for state sync chunks: stat /tmp: no such file or directory" module=statesync
-	volNodeKey   = "vol-node-key"   // Secret containing the node key.
 )
 
 // WithOrdinal updates adds name and other metadata to the pod using "ordinal" which is the pod's
@@ -257,6 +264,7 @@ func (b PodBuilder) WithOrdinal(ordinal int32) PodBuilder {
 					Items: []corev1.KeyToPath{
 						{Key: configOverlayFile, Path: configOverlayFile},
 						{Key: appOverlayFile, Path: appOverlayFile},
+						{Key: nodeKeyFile, Path: nodeKeyFile},
 					},
 				},
 			},
@@ -265,17 +273,6 @@ func (b PodBuilder) WithOrdinal(ordinal int32) PodBuilder {
 			Name: volSystemTmp,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		},
-		{
-			Name: volNodeKey,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: nodeKeySecretName(b.crd, ordinal),
-					Items: []corev1.KeyToPath{
-						{Key: nodeKeyFile, Path: nodeKeyFile},
-					},
-				},
 			},
 		},
 	}
@@ -294,9 +291,7 @@ func (b PodBuilder) WithOrdinal(ordinal int32) PodBuilder {
 	}
 
 	// At this point, guaranteed to have at least 2 containers.
-	pod.Spec.Containers[0].VolumeMounts = append(mounts, corev1.VolumeMount{
-		Name: volNodeKey, MountPath: path.Join(ChainHomeDir(b.crd), "config", nodeKeyFile), SubPath: nodeKeyFile,
-	})
+	pod.Spec.Containers[0].VolumeMounts = mounts
 	pod.Spec.Containers[1].VolumeMounts = []corev1.VolumeMount{
 		// The healthcheck sidecar needs access to the home directory so it can read disk usage.
 		{Name: volChainHome, MountPath: ChainHomeDir(b.crd), ReadOnly: true},
@@ -310,10 +305,11 @@ func (b PodBuilder) WithOrdinal(ordinal int32) PodBuilder {
 }
 
 const (
-	workDir        = "/home/operator"
-	tmpDir         = workDir + "/.tmp"
-	tmpConfigDir   = workDir + "/.config"
-	infraToolImage = "ghcr.io/strangelove-ventures/infra-toolkit:v0.0.1"
+	workDir          = "/home/operator"
+	tmpDir           = workDir + "/.tmp"
+	tmpConfigDir     = workDir + "/.config"
+	infraToolImage   = "ghcr.io/strangelove-ventures/infra-toolkit"
+	infraToolVersion = "v0.1.6"
 
 	// Necessary for statesync
 	systemTmpDir = "/tmp"
@@ -339,6 +335,10 @@ func envVars(crd *cosmosv1.CosmosFullNode) []corev1.EnvVar {
 	}
 }
 
+func resolveInfraToolImage() string {
+	return fmt.Sprintf("%s:%s", infraToolImage, infraToolVersion)
+}
+
 func initContainers(crd *cosmosv1.CosmosFullNode, moniker string) []corev1.Container {
 	tpl := crd.Spec.PodTemplate
 	binary := crd.Spec.ChainSpec.Binary
@@ -353,7 +353,7 @@ func initContainers(crd *cosmosv1.CosmosFullNode, moniker string) []corev1.Conta
 	required := []corev1.Container{
 		{
 			Name:            "clean-init",
-			Image:           infraToolImage,
+			Image:           resolveInfraToolImage(),
 			Command:         []string{"sh"},
 			Args:            []string{"-c", `rm -rf "$HOME/.tmp/*"`},
 			Env:             env,
@@ -385,7 +385,7 @@ echo "Initializing into tmp dir for downstream processing..."
 
 		{
 			Name:            "genesis-init",
-			Image:           infraToolImage,
+			Image:           resolveInfraToolImage(),
 			Command:         []string{genesisCmd},
 			Args:            genesisArgs,
 			Env:             env,
@@ -394,7 +394,7 @@ echo "Initializing into tmp dir for downstream processing..."
 		},
 		{
 			Name:            "addrbook-init",
-			Image:           infraToolImage,
+			Image:           resolveInfraToolImage(),
 			Command:         []string{addrbookCmd},
 			Args:            addrbookArgs,
 			Env:             env,
@@ -403,7 +403,7 @@ echo "Initializing into tmp dir for downstream processing..."
 		},
 		{
 			Name:    "config-merge",
-			Image:   infraToolImage,
+			Image:   resolveInfraToolImage(),
 			Command: []string{"sh"},
 			Args: []string{"-c",
 				`
@@ -417,11 +417,17 @@ OVERLAY_DIR="$HOME/.config"
 # The node key is a secret mounted into the main "node" container, so we do not need this one.
 echo "Removing node key from chain's init subcommand..."
 rm -rf "$CONFIG_DIR/node_key.json"
+cp "$OVERLAY_DIR/node_key.json" "$CONFIG_DIR/node_key.json"
 
 echo "Merging config..."
 set -x
-config-merge -f toml "$TMP_DIR/config.toml" "$OVERLAY_DIR/config-overlay.toml" > "$CONFIG_DIR/config.toml"
-config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CONFIG_DIR/app.toml"
+
+if [ -f "$TMP_DIR/config.toml" ]; then
+	config-merge -f toml "$TMP_DIR/config.toml" "$OVERLAY_DIR/config-overlay.toml" > "$CONFIG_DIR/config.toml"
+fi
+if [ -f "$TMP_DIR/app.toml" ]; then
+	config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CONFIG_DIR/app.toml"
+fi
 `,
 			},
 			Env:             env,
@@ -434,7 +440,7 @@ config-merge -f toml "$TMP_DIR/app.toml" "$OVERLAY_DIR/app-overlay.toml" > "$CON
 		cmd, args := DownloadSnapshotCommand(crd.Spec.ChainSpec)
 		required = append(required, corev1.Container{
 			Name:            "snapshot-restore",
-			Image:           infraToolImage,
+			Image:           resolveInfraToolImage(),
 			Command:         []string{cmd},
 			Args:            args,
 			Env:             env,
@@ -541,4 +547,95 @@ func PVCName(pod *corev1.Pod) string {
 		return ""
 	}
 	return found.PersistentVolumeClaim.ClaimName
+}
+
+func buildAdditionalPod(
+	crd *cosmosv1.CosmosFullNode,
+	ordinal int32,
+	podSpec cosmosv1.AdditionalPodSpec,
+) (*corev1.Pod, error) {
+	// Create a unique name for the additional pod
+	name := fmt.Sprintf("%s-%d", podSpec.Name, ordinal)
+
+	labels := defaultLabels(crd)
+	labels[kube.NameLabel] = appName(crd) + "-" + podSpec.Name
+
+	belongsTo := instanceName(crd, ordinal)
+
+	pod := &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Pod",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   crd.Namespace,
+			Name:        name,
+			Labels:      labels,
+			Annotations: make(map[string]string),
+		},
+		Spec: podSpec.PodSpec,
+	}
+
+	if podSpec.PreferSameNode {
+		pod.Spec.Affinity = &corev1.Affinity{
+			PodAffinity: &corev1.PodAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{
+						Weight: 100,
+						PodAffinityTerm: corev1.PodAffinityTerm{
+							LabelSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									kube.InstanceLabel: belongsTo,
+								},
+							},
+							TopologyKey: "kubernetes.io/hostname",
+						},
+					},
+				},
+			},
+		}
+	}
+
+	// Apply common labels and annotations
+	preserveMergeInto(pod.Labels, podSpec.Metadata.Labels)
+	preserveMergeInto(pod.Annotations, podSpec.Metadata.Annotations)
+
+	pod.Labels[kube.InstanceLabel] = name
+	pod.Labels[kube.BelongsToLabel] = belongsTo
+
+	if len(crd.Spec.ChainSpec.Versions) > 0 {
+		instanceHeight := uint64(0)
+		if height, ok := crd.Status.Height[belongsTo]; ok {
+			instanceHeight = height
+		}
+		var vrs *cosmosv1.ChainVersion
+		for _, v := range crd.Spec.ChainSpec.Versions {
+			if instanceHeight < v.UpgradeHeight {
+				break
+			}
+			vrs = &v
+		}
+		if vrs != nil {
+			setVersionedImages(pod, vrs)
+		}
+	}
+
+	// Handle instance overrides if needed
+	if o, ok := crd.Spec.InstanceOverrides[name]; ok {
+		if o.DisableStrategy != nil {
+			return nil, nil
+		}
+		if o.Image != "" {
+			if len(pod.Spec.Containers) == 0 {
+				return nil, fmt.Errorf("no containers in pod %q", name)
+			}
+			pod.Spec.Containers[0].Image = o.Image
+		}
+		if o.NodeSelector != nil {
+			pod.Spec.NodeSelector = o.NodeSelector
+		}
+	}
+
+	kube.NormalizeMetadata(&pod.ObjectMeta)
+	return pod, nil
 }

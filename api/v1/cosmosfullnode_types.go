@@ -17,6 +17,9 @@ limitations under the License.
 package v1
 
 import (
+	"strconv"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -32,10 +35,24 @@ const CosmosFullNodeController = "CosmosFullNode"
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+type Ordinals struct {
+	// start is the number representing the first replica's index. It may be used to number replicas from an alternate index (eg: 1-indexed) over the default 0-indexed names,
+	// or to orchestrate progressive movement of replicas from one CosmosFullnode spec to another. If set, replica indices will be in the range:
+	// [.spec.ordinals.start, .spec.ordinals.start + .spec.replicas).
+	// If unset, defaults to 0. Replica indices will be in the range:
+	// [0, .spec.replicas).
+	// +kubebuilder:validation:Minimum:=0
+	Start int32 `json:"start,omitempty"`
+}
+
 // FullNodeSpec defines the desired state of CosmosFullNode
 type FullNodeSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Ordinals controls the numbering of replica indices in a CosmosFullnode spec.
+	// The default ordinals behavior assigns a "0" index to the first replica and increments the index by one for each additional replica requested.
+	Ordinals Ordinals `json:"ordinals,omitempty"`
 
 	// Number of replicas to create.
 	// Individual replicas have a consistent identity.
@@ -57,6 +74,12 @@ type FullNodeSpec struct {
 	// Template applied to all pods.
 	// Creates 1 pod per replica.
 	PodTemplate PodSpec `json:"podTemplate"`
+
+	// Additional pod specs to apply per replica.
+	// This is useful for adding additional pods to the deployment
+	// that need to be versioned alongside the main pod.
+	// +optional
+	AdditionalVersionedPods []AdditionalPodSpec `json:"additionalVersionedPods"`
 
 	// How to scale pods when performing an update.
 	// +optional
@@ -93,6 +116,10 @@ type FullNodeSpec struct {
 	// complexity of the CosmosFullNodeController.
 	// +optional
 	SelfHeal *SelfHealSpec `json:"selfHeal"`
+
+	// If set, the pod will use the specified service account. If not set, pods will create and use an isolated service account.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName"`
 }
 
 type FullNodeType string
@@ -300,17 +327,36 @@ type PodSpec struct {
 	Containers []corev1.Container `json:"containers"`
 }
 
+type AdditionalPodSpec struct {
+	// Name of the additional pod.
+	// +kubebuilder:validation:MinLength:=1
+	Name string `json:"name"`
+
+	// Metadata applied to the additional pod.
+	// +optional
+	Metadata Metadata `json:"metadata"`
+
+	corev1.PodSpec `json:",inline"`
+
+	// Whether to prefer the same node as the main pod for the additional pod.
+	// This is useful for pods that are not part of the main pod's deployment, but should still be co-located.
+	// +optional
+	PreferSameNode bool `json:"preferSameNode,omitempty"`
+}
+
 type FullNodeProbeStrategy string
 
 const (
-	FullNodeProbeStrategyNone FullNodeProbeStrategy = "None"
+	FullNodeProbeStrategyNone      FullNodeProbeStrategy = "None"
+	FullNodeProbeStrategyReachable FullNodeProbeStrategy = "Reachable"
+	FullNodeProbeStrategyInSync    FullNodeProbeStrategy = "InSync"
 )
 
 // FullNodeProbesSpec configures probes for created pods
 type FullNodeProbesSpec struct {
 	// Strategy controls the default probes added by the controller.
 	// None = Do not add any probes. May be necessary for Sentries using a remote signer.
-	// +kubebuilder:validation:Enum:=None
+	// +kubebuilder:validation:Enum:=None;Reachable;InSync
 	// +optional
 	Strategy FullNodeProbeStrategy `json:"strategy"`
 }
@@ -436,6 +482,8 @@ type ChainSpec struct {
 	Comet CometConfig `json:"config"`
 
 	// App configuration applied to app.toml.
+	// Although optional, it's highly recommended you configure this field.
+	// +optional
 	App SDKAppConfig `json:"app"`
 
 	// One of trace|debug|info|warn|error|fatal|panic.
@@ -559,6 +607,14 @@ type ChainVersion struct {
 	// The docker image for this version in "repository:tag" format. E.g. busybox:latest.
 	Image string `json:"image"`
 
+	// Version overrides for initContainers of the fullnode/sentry pods.
+	// +optional
+	InitContainers map[string]string `json:"initContainers"`
+
+	// Version overrides for containers of the fullnode/sentry pods.
+	// +optional
+	Containers map[string]string `json:"containers"`
+
 	// Determines if the node should forcefully halt at the upgrade height.
 	// +optional
 	SetHaltHeight bool `json:"setHaltHeight,omitempty"`
@@ -566,6 +622,14 @@ type ChainVersion struct {
 
 // CometConfig configures the config.toml.
 type CometConfig struct {
+	// RPC listen address. Defaults to tcp://0.0.0.0:26657
+	// +optional
+	RPCListenAddress string `json:"rpcListenAddress"`
+
+	// P2P listen address. Defaults to tcp://0.0.0.0:26656
+	// +optional
+	P2PListenAddress string `json:"p2pListenAddress"`
+
 	// Comma delimited list of p2p nodes in <ID>@<IP>:<PORT> format to keep persistent p2p connections.
 	// +kubebuilder:validation:MinLength:=1
 	// +optional
@@ -610,6 +674,39 @@ type CometConfig struct {
 	// and unconditional_peer_ids. Use the dedicated fields for these values which will merge values.
 	// +optional
 	TomlOverrides *string `json:"overrides"`
+}
+
+const (
+	defaultRPCPort = 26657
+	defaultP2PPort = 26656
+)
+
+func (c CometConfig) RPCPort() int32 {
+	if c.RPCListenAddress == "" {
+		return defaultRPCPort
+	}
+	portSplit := strings.Split(c.RPCListenAddress, ":")
+
+	port, err := strconv.ParseInt(portSplit[len(portSplit)-1], 10, 32)
+	if err != nil {
+		return defaultRPCPort
+	}
+
+	return int32(port)
+}
+
+func (c CometConfig) P2PPort() int32 {
+	if c.P2PListenAddress == "" {
+		return defaultP2PPort
+	}
+	portSplit := strings.Split(c.P2PListenAddress, ":")
+
+	port, err := strconv.ParseInt(portSplit[len(portSplit)-1], 10, 32)
+	if err != nil {
+		return defaultP2PPort
+	}
+
+	return int32(port)
 }
 
 // SDKAppConfig configures the cosmos sdk application app.toml.
@@ -720,6 +817,10 @@ type ServiceSpec struct {
 	// Overrides for the single RPC service.
 	// +optional
 	RPCTemplate ServiceOverridesSpec `json:"rpcTemplate"`
+
+	// Overrides for default cluster domain name.
+	// +optional
+	ClusterDomain *string `json:"clusterDomain"`
 }
 
 // ServiceOverridesSpec allows some overrides for the created, single RPC service.
@@ -732,6 +833,15 @@ type ServiceOverridesSpec struct {
 	// +kubebuilder:validation:Enum:=ClusterIP;NodePort;LoadBalancer;ExternalName
 	// +optional
 	Type *corev1.ServiceType `json:"type"`
+
+	// Setting this to "None" makes a "headless service" (no virtual IP), which is useful when direct endpoint connections are preferred and proxying is not required.
+	// If not set, defaults to "".
+	// +optional
+	ClusterIP *string `json:"clusterIP"`
+
+	// List of additional ports to expose from the service.
+	// +optional
+	Ports []corev1.ServicePort `json:"ports"`
 
 	// Sets endpoint and routing behavior.
 	// See: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#caveats-and-limitations-when-preserving-source-ips
@@ -763,6 +873,11 @@ type InstanceOverridesSpec struct {
 	// Sets an individual instance's external address.
 	// +optional
 	ExternalAddress *string `json:"externalAddress"`
+
+	// NodeSelector is a selector which must be true for the pod to fit on a node.
+	// Selector which must match a node's labels for the pod to be scheduled on that node.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 }
 
 type DisableStrategy string

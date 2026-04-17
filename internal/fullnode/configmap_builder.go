@@ -14,24 +14,27 @@ import (
 	"github.com/strangelove-ventures/cosmos-operator/internal/diff"
 	"github.com/strangelove-ventures/cosmos-operator/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
 	configOverlayFile = "config-overlay.toml"
 	appOverlayFile    = "app-overlay.toml"
+	nodeKeyFile       = "node_key.json"
 )
 
 // BuildConfigMaps creates a ConfigMap with configuration to be mounted as files into containers.
-// Currently, the config.toml (for Comet) and app.toml (for the Cosmos SDK).
-func BuildConfigMaps(crd *cosmosv1.CosmosFullNode, peers Peers) ([]diff.Resource[*corev1.ConfigMap], error) {
+// Currently, the config.toml (for Comet), app.toml (for the Cosmos SDK) and node_key.json.
+func BuildConfigMaps(crd *cosmosv1.CosmosFullNode, peers Peers, nodeKeys NodeKeys) ([]diff.Resource[*corev1.ConfigMap], error) {
 	var (
 		buf = bufPool.Get().(*bytes.Buffer)
-		cms = make([]diff.Resource[*corev1.ConfigMap], crd.Spec.Replicas)
+		cms = make([]diff.Resource[*corev1.ConfigMap], 0, crd.Spec.Replicas)
 	)
 	defer bufPool.Put(buf)
 	defer buf.Reset()
+	startOrdinal := crd.Spec.Ordinals.Start
 
-	for i := int32(0); i < crd.Spec.Replicas; i++ {
+	for i := startOrdinal; i < startOrdinal+crd.Spec.Replicas; i++ {
 		data := make(map[string]string)
 		instance := instanceName(crd, i)
 		if err := addConfigToml(buf, data, crd, instance, peers); err != nil {
@@ -65,6 +68,16 @@ func BuildConfigMaps(crd *cosmosv1.CosmosFullNode, peers Peers) ([]diff.Resource
 		}
 		buf.Reset()
 
+		nodeKey, ok := nodeKeys[client.ObjectKey{Name: instanceName(crd, i), Namespace: crd.Namespace}]
+
+		if !ok {
+			return nil, kube.UnrecoverableError(fmt.Errorf("node key not found for %s", instanceName(crd, i)))
+		}
+
+		nodeKeyValue := string(nodeKey.MarshaledNodeKey)
+
+		data[nodeKeyFile] = nodeKeyValue
+
 		var cm corev1.ConfigMap
 		cm.Name = instanceName(crd, i)
 		cm.Namespace = crd.Namespace
@@ -75,7 +88,7 @@ func BuildConfigMaps(crd *cosmosv1.CosmosFullNode, peers Peers) ([]diff.Resource
 		)
 		cm.Data = data
 		kube.NormalizeMetadata(&cm.ObjectMeta)
-		cms[i] = diff.Adapt(&cm, i)
+		cms = append(cms, diff.Adapt(&cm, int(i-startOrdinal)))
 	}
 
 	return cms, nil
@@ -179,14 +192,27 @@ func addConfigToml(buf *bytes.Buffer, cmData map[string]string, crd *cosmosv1.Co
 		}
 	}
 
+	if comet.P2PListenAddress != "" {
+		p2p["laddr"] = comet.P2PListenAddress
+	}
+
 	base["p2p"] = p2p
 
-	if v := comet.CorsAllowedOrigins; v != nil {
-		base["rpc"] = decodedToml{
-			"cors_allowed_origins": v,
-			"cors-allowed-origins": v,
-		}
+	var rpcLaddr = "tcp://0.0.0.0:26657"
+	if comet.RPCListenAddress != "" {
+		rpcLaddr = comet.RPCListenAddress
 	}
+
+	rpc := decodedToml{
+		"laddr": rpcLaddr,
+	}
+
+	if v := comet.CorsAllowedOrigins; v != nil {
+		rpc["cors_allowed_origins"] = v
+		rpc["cors-allowed-origins"] = v
+	}
+
+	base["rpc"] = rpc
 
 	dst := defaultComet()
 

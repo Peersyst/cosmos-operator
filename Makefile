@@ -42,6 +42,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	go run tools/minify-crd.go -v -o config/crd/bases/cosmos.strange.love_cosmosfullnodes.yaml
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -145,7 +146,7 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v3.8.7
-CONTROLLER_TOOLS_VERSION ?= v0.9.0
+CONTROLLER_TOOLS_VERSION ?= v0.16.5
 
 KUSTOMIZE_INSTALL_SCRIPT ?= "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"
 .PHONY: kustomize

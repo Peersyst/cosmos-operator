@@ -2,7 +2,6 @@ package fullnode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"sort"
@@ -17,6 +16,7 @@ import (
 
 // Peer contains information about a peer.
 type Peer struct {
+	P2PPort         int32
 	NodeID          string
 	PrivateAddress  string // Only the private address my-service.namespace.svc.cluster.local:<port>
 	ExternalAddress string // Only the address <external-ip-or-hostname>:<port>. Not all peers will be external.
@@ -32,7 +32,7 @@ func (peer Peer) PrivatePeer() string {
 // ExternalPeer returns the full external address of the peer in the format <node_id>@<external_address>:<port>.
 func (peer Peer) ExternalPeer() string {
 	if peer.ExternalAddress == "" {
-		return peer.NodeID + "@" + net.JoinHostPort("0.0.0.0", strconv.Itoa(p2pPort))
+		return peer.NodeID + "@" + net.JoinHostPort("0.0.0.0", strconv.Itoa(int(peer.P2PPort)))
 	}
 	return peer.NodeID + "@" + peer.ExternalAddress
 }
@@ -103,25 +103,28 @@ func NewPeerCollector(client Getter) *PeerCollector {
 }
 
 // Collect peer information given the crd.
-func (c PeerCollector) Collect(ctx context.Context, crd *cosmosv1.CosmosFullNode) (Peers, kube.ReconcileError) {
+func (c PeerCollector) Collect(ctx context.Context, crd *cosmosv1.CosmosFullNode, nodeKeys NodeKeys) (Peers, kube.ReconcileError) {
 	peers := make(Peers)
-	for i := int32(0); i < crd.Spec.Replicas; i++ {
-		secretName := nodeKeySecretName(crd, i)
-		var secret corev1.Secret
-		// Hoping the caching layer kubebuilder prevents API errors or rate limits. Simplifies logic to use a Get here
-		// vs. manually filtering through a List.
-		if err := c.client.Get(ctx, client.ObjectKey{Name: secretName, Namespace: crd.Namespace}, &secret); err != nil {
-			return nil, kube.TransientError(fmt.Errorf("get secret %s: %w", secretName, err))
+	startOrdinal := crd.Spec.Ordinals.Start
+
+	clusterDomain := "cluster.local"
+	if crd.Spec.Service.ClusterDomain != nil {
+		clusterDomain = *crd.Spec.Service.ClusterDomain
+	}
+
+	for i := startOrdinal; i < startOrdinal+crd.Spec.Replicas; i++ {
+		nodeKey, ok := nodeKeys[c.objectKey(crd, i)]
+
+		if !ok {
+			return nil, kube.UnrecoverableError(fmt.Errorf("node key not found for %s", c.objectKey(crd, i)))
 		}
 
-		var nodeKey NodeKey
-		if err := json.Unmarshal(secret.Data[nodeKeyFile], &nodeKey); err != nil {
-			return nil, kube.UnrecoverableError(err)
-		}
 		svcName := p2pServiceName(crd, i)
+		p2pPort := crd.Spec.ChainSpec.Comet.P2PPort()
 		peers[c.objectKey(crd, i)] = Peer{
-			NodeID:         nodeKey.ID(),
-			PrivateAddress: fmt.Sprintf("%s.%s.svc.cluster.local:%d", svcName, secret.Namespace, p2pPort),
+			P2PPort:        p2pPort,
+			NodeID:         nodeKey.NodeKey.ID(),
+			PrivateAddress: fmt.Sprintf("%s.%s.svc.%s:%d", svcName, crd.Namespace, clusterDomain, p2pPort),
 		}
 		if err := c.addExternalAddress(ctx, peers, crd, i); err != nil {
 			return nil, kube.TransientError(err)
@@ -159,7 +162,7 @@ func (c PeerCollector) addExternalAddress(ctx context.Context, peers Peers, crd 
 	lb := ingress[0]
 	host := lo.Ternary(lb.IP != "", lb.IP, lb.Hostname)
 	if host != "" {
-		info.ExternalAddress = net.JoinHostPort(host, strconv.Itoa(p2pPort))
+		info.ExternalAddress = net.JoinHostPort(host, strconv.FormatInt(int64(crd.Spec.ChainSpec.Comet.P2PPort()), 10))
 	}
 	return nil
 }

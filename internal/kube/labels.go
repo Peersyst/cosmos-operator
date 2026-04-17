@@ -18,6 +18,8 @@ const (
 
 	// OrdinalAnnotation is used to order resources. The value must be a base 10 integer string.
 	OrdinalAnnotation = "app.kubernetes.io/ordinal"
+
+	BelongsToLabel = "cosmos.strange.love/belongs-to"
 )
 
 // Fields.
@@ -59,7 +61,7 @@ func NormalizeMetadata(obj *metav1.ObjectMeta) {
 
 	annots := make(map[string]string)
 	for k, v := range obj.Annotations {
-		annots[ToLabelKey(k)] = trimMiddle(v, 63)
+		annots[ToLabelKey(k)] = v
 	}
 	obj.Annotations = annots
 

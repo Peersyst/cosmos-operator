@@ -18,7 +18,7 @@ func BuildPods(crd *cosmosv1.CosmosFullNode, cksums ConfigChecksums) ([]diff.Res
 		pods    []diff.Resource[*corev1.Pod]
 	)
 	candidates := podCandidates(crd)
-	for i := int32(0); i < crd.Spec.Replicas; i++ {
+	for i := crd.Spec.Ordinals.Start; i < crd.Spec.Ordinals.Start+crd.Spec.Replicas; i++ {
 		pod, err := builder.WithOrdinal(i).Build()
 		if err != nil {
 			return nil, err
@@ -35,7 +35,49 @@ func BuildPods(crd *cosmosv1.CosmosFullNode, cksums ConfigChecksums) ([]diff.Res
 		pod.Annotations[configChecksumAnnotation] = cksums[client.ObjectKeyFromObject(pod)]
 		pods = append(pods, diff.Adapt(pod, i))
 	}
+
+	for i := crd.Spec.Ordinals.Start; i < crd.Spec.Ordinals.Start+crd.Spec.Replicas; i++ {
+		// Build any additional versioned pods for this ordinal
+		for podIdx, additionalPodSpec := range crd.Spec.AdditionalVersionedPods {
+			additionalPod, err := buildAdditionalPod(crd, i, additionalPodSpec)
+			if err != nil {
+				return nil, err
+			}
+
+			if additionalPod == nil {
+				continue
+			}
+
+			// Use a unique identifier for the additional pod (combining ordinal with pod index)
+			// This ensures stability in the diff algorithm
+			podOrdinal := i*100 + int32(podIdx) + 1000 // Add offset to ensure uniqueness
+			additionalPod.Annotations[configChecksumAnnotation] = cksums[client.ObjectKeyFromObject(additionalPod)]
+			pods = append(pods, diff.Adapt(additionalPod, podOrdinal))
+		}
+	}
 	return pods, nil
+}
+
+func setVersionedImages(pod *corev1.Pod, v *cosmosv1.ChainVersion) {
+	setChainContainerImage(pod, v.Image)
+
+	for name, image := range v.InitContainers {
+		for i := range pod.Spec.InitContainers {
+			if pod.Spec.InitContainers[i].Name == name {
+				pod.Spec.InitContainers[i].Image = image
+				break
+			}
+		}
+	}
+
+	for name, image := range v.Containers {
+		for i := range pod.Spec.Containers {
+			if pod.Spec.Containers[i].Name == name {
+				pod.Spec.Containers[i].Image = image
+				break
+			}
+		}
+	}
 }
 
 func setChainContainerImage(pod *corev1.Pod, image string) {
@@ -45,6 +87,7 @@ func setChainContainerImage(pod *corev1.Pod, image string) {
 			break
 		}
 	}
+
 	for i := range pod.Spec.InitContainers {
 		if pod.Spec.InitContainers[i].Name == chainInitContainer {
 			pod.Spec.InitContainers[i].Image = image

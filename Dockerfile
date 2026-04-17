@@ -1,7 +1,7 @@
 # See rocksdb/README.md for instructions to update rocksdb version
 FROM ghcr.io/strangelove-ventures/rocksdb:v7.10.2 AS rocksdb
 
-FROM --platform=$BUILDPLATFORM golang:1.20-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 
 RUN apk add --update --no-cache\
     gcc\
@@ -22,9 +22,9 @@ ARG TARGETARCH
 ARG BUILDARCH
 
 RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDARCH}" != "arm64" ]; then \
-        wget -c https://musl.cc/aarch64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
+        wget -c https://storage.googleapis.com/strangelove-public/musl/aarch64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
     elif [ "${TARGETARCH}" = "amd64" ] && [ "${BUILDARCH}" != "amd64" ]; then \
-        wget -c https://musl.cc/x86_64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
+        wget -c https://storage.googleapis.com/strangelove-public/musl/x86_64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
     fi
 
 RUN set -eux;\
