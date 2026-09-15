@@ -93,9 +93,9 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 				// healthcheck sidecar
 				{
 					Name: "healthcheck",
-					// Available images: https://github.com/orgs/strangelove-ventures/packages?repo_name=cosmos-operator
+					// Available images: ECR xrpl-evm/cosmos-operator (mirror of the Peersyst fork build).
 					// IMPORTANT: Must use v0.6.2 or later.
-					Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
+					Image:   "291847425310.dkr.ecr.us-east-1.amazonaws.com/xrpl-evm/cosmos-operator:" + version.DockerTag(),
 					Command: []string{"/manager", "healthcheck", "--rpc-host", fmt.Sprintf("http://localhost:%d", crd.Spec.ChainSpec.Comet.RPCPort())},
 					Ports:   []corev1.ContainerPort{{ContainerPort: healthCheckPort, Protocol: corev1.ProtocolTCP}},
 					Resources: corev1.ResourceRequirements{
@@ -115,7 +115,7 @@ func NewPodBuilder(crd *cosmosv1.CosmosFullNode) PodBuilder {
 		// version check sidecar, runs on inverval in case the instance is halting for upgrade.
 		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
 			Name:    "version-check-interval",
-			Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
+			Image:   "291847425310.dkr.ecr.us-east-1.amazonaws.com/xrpl-evm/cosmos-operator:" + version.DockerTag(),
 			Command: versionCheckCmd,
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -308,7 +308,7 @@ const (
 	workDir          = "/home/operator"
 	tmpDir           = workDir + "/.tmp"
 	tmpConfigDir     = workDir + "/.config"
-	infraToolImage   = "ghcr.io/strangelove-ventures/infra-toolkit"
+	infraToolImage   = "ghcr.io/amygdala-labs/infra-toolkit"
 	infraToolVersion = "v0.1.6"
 
 	// Necessary for statesync
@@ -461,7 +461,7 @@ fi
 	// After the status is patched, the pod will be restarted with the correct image.
 	required = append(required, corev1.Container{
 		Name:    "version-check",
-		Image:   "ghcr.io/strangelove-ventures/cosmos-operator:" + version.DockerTag(),
+		Image:   "291847425310.dkr.ecr.us-east-1.amazonaws.com/xrpl-evm/cosmos-operator:" + version.DockerTag(),
 		Command: versionCheckCmd,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{

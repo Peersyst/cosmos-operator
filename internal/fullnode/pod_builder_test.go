@@ -303,7 +303,7 @@ func TestPodBuilder(t *testing.T) {
 
 		healthContainer := pod.Spec.Containers[1]
 		require.Equal(t, "healthcheck", healthContainer.Name)
-		require.Equal(t, "ghcr.io/strangelove-ventures/cosmos-operator:latest", healthContainer.Image)
+		require.Equal(t, "291847425310.dkr.ecr.us-east-1.amazonaws.com/xrpl-evm/cosmos-operator:latest", healthContainer.Image)
 		require.Equal(t, []string{"/manager", "healthcheck", "--rpc-host", "http://localhost:26657"}, healthContainer.Command)
 		require.Empty(t, healthContainer.Args)
 		require.Empty(t, healthContainer.ImagePullPolicy)
@@ -318,13 +318,13 @@ func TestPodBuilder(t *testing.T) {
 		require.Len(t, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string { return c.Name }), 7)
 
 		wantInitImages := []string{
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
+			"ghcr.io/amygdala-labs/infra-toolkit:v0.1.6",
 			"main-image:v1.2.3",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/infra-toolkit:v0.1.6",
-			"ghcr.io/strangelove-ventures/cosmos-operator:latest",
+			"ghcr.io/amygdala-labs/infra-toolkit:v0.1.6",
+			"ghcr.io/amygdala-labs/infra-toolkit:v0.1.6",
+			"ghcr.io/amygdala-labs/infra-toolkit:v0.1.6",
+			"ghcr.io/amygdala-labs/infra-toolkit:v0.1.6",
+			"291847425310.dkr.ecr.us-east-1.amazonaws.com/xrpl-evm/cosmos-operator:latest",
 		}
 		require.Equal(t, wantInitImages, lo.Map(pod.Spec.InitContainers, func(c corev1.Container, _ int) string {
 			return c.Image
