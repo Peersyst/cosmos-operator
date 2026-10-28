@@ -51,8 +51,19 @@ func (sc ServiceControl) Reconcile(ctx context.Context, log kube.Logger, crd *co
 		}
 	}
 
+	existing := make(map[string]*corev1.Service, len(current))
+	for _, svc := range current {
+		existing[svc.Name] = svc
+	}
+
 	for _, svc := range diffed.Updates() {
 		log.Info("Updating service", "svcName", svc.Name)
+		// Keep fields set by other controllers (e.g. AWS Load Balancer Controller).
+		// loadBalancerClass is immutable, and a PUT without it is rejected.
+		if cur, ok := existing[svc.Name]; ok {
+			svc.Finalizers = cur.Finalizers
+			svc.Spec.LoadBalancerClass = cur.Spec.LoadBalancerClass
+		}
 		if err := sc.client.Update(ctx, svc); err != nil {
 			return kube.TransientError(fmt.Errorf("update service %q: %w", svc.Name, err))
 		}
