@@ -53,4 +53,29 @@ func TestServiceControl_Reconcile(t *testing.T) {
 		require.Equal(t, 2, mClient.UpdateCount)
 		require.Zero(t, mClient.DeleteCount) // Services are never deleted.
 	})
+
+	t.Run("update keeps loadBalancerClass and finalizers set by other controllers", func(t *testing.T) {
+		crd := defaultCRD()
+		crd.Namespace = "test"
+
+		var mClient mockSvcClient
+		mClient.ObjectList = corev1.ServiceList{Items: []corev1.Service{{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "osmosis-rpc",
+				Namespace:  crd.Namespace,
+				Finalizers: []string{"service.k8s.aws/resources"},
+			},
+			Spec: corev1.ServiceSpec{LoadBalancerClass: ptr("service.k8s.aws/nlb")},
+		}}}
+
+		control := NewServiceControl(&mClient)
+		err := control.Reconcile(ctx, nopReporter, &crd)
+		require.NoError(t, err)
+
+		require.Equal(t, 1, mClient.UpdateCount)
+		got := mClient.LastUpdateObject
+		require.Equal(t, "osmosis-rpc", got.Name)
+		require.Equal(t, []string{"service.k8s.aws/resources"}, got.Finalizers)
+		require.Equal(t, "service.k8s.aws/nlb", *got.Spec.LoadBalancerClass)
+	})
 }
